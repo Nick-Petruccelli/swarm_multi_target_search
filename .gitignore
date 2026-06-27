@@ -1,0 +1,23 @@
+# ROS2 workspace build products
+build/
+install/
+log/
+
+# Colcon
+.colcon/
+
+# Compile database (if generated)
+compile_commands.json
+
+# Vim/Neovim
+*.swp
+*.swo
+Session.vim
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
