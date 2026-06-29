@@ -1,6 +1,7 @@
 #include <atomic>
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <queue>
 #include <chrono>
@@ -10,11 +11,12 @@
 #include <geometry_msgs/msg/point.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <px4_msgs/msg/vehicle_odometry.hpp>
+#include <stack>
 #include <unordered_set>
 
 #define OCCUPANCY_GRID_WIDTH 300
 #define OCCUPANCY_GRID_HEIGHT 50
-#define OCCUPANCY_GRID_CELL_SIZE .5
+#define OCCUPANCY_GRID_CELL_SIZE .5f
 
 #define COLLISION_CHECK_STEP_LENGTH .1
 #define COLLISION_BOX_HALF_LENGTH .25f
@@ -144,8 +146,9 @@ private:
 	Position world_pos_to_grid_pos(const Position &world_pos);
 	Position grid_pos_to_world_pos(const Position &world_pos);
 	float get_position_distance(const Position &pos1, const Position &pos2);
+	int get_cord_distance(const GridCord &pos1, const GridCord &pos2);
 
-	std::array<std::shared_ptr<PathNode>, 26> get_available_moves(const std::shared_ptr<PathNode> &node);
+	std::array<std::shared_ptr<PathNode>, 6> get_available_moves(const std::shared_ptr<PathNode> &node);
 	std::vector<Position> backtrace_path(std::shared_ptr<PathNode> end);
 
 	bool check_collisions_on_line(const Position &start, const Position &end);
@@ -184,29 +187,19 @@ void PathFinder::calculate_path(Position target_pos) {
 			return;
 		auto node = frontier.top();
 		frontier.pop();
-		GridCord node_grid_cord = {
-			(int)(node->position.x / OCCUPANCY_GRID_CELL_SIZE) + (OCCUPANCY_GRID_WIDTH / 2),
-			(int)(node->position.y / OCCUPANCY_GRID_CELL_SIZE) + (OCCUPANCY_GRID_WIDTH / 2),
-			(int)(node->position.z / OCCUPANCY_GRID_CELL_SIZE) + (OCCUPANCY_GRID_HEIGHT / 2)
-		};
-		visited.insert(node_grid_cord);
-		RCLCPP_INFO(this->get_logger(), "NodeGridCord: (%d,%d,%d)", node_grid_cord.x, node_grid_cord.y, node_grid_cord.z);
-		std::array<std::shared_ptr<PathNode>, 26> available_moves = get_available_moves(node);
-		for (size_t i=0; i<22; i++) {
+		visited.insert(node->position);
+		//RCLCPP_INFO(this->get_logger(), "NodeGridCord: (%d,%d,%d)", node->position.x, node->position.y, node->position.z);
+		std::array<std::shared_ptr<PathNode>, 6> available_moves = get_available_moves(node);
+		for (size_t i=0; i<6; i++) {
 			auto move = available_moves[i];
 			move->prev_node = node;
 			move->distance = node->distance + PATH_FINDING_MOVE_STEP_LENGTH;
 			move->huristic = get_cord_distance(move->position, target_pos_grid_cord);
-			GridCord grid_cord = {
-				(int)(move->position.x / OCCUPANCY_GRID_CELL_SIZE) + (OCCUPANCY_GRID_WIDTH / 2),
-				(int)(move->position.y / OCCUPANCY_GRID_CELL_SIZE) + (OCCUPANCY_GRID_WIDTH / 2),
-				(int)(move->position.z / OCCUPANCY_GRID_CELL_SIZE) + (OCCUPANCY_GRID_HEIGHT / 2)
-			};
-			if (visited.find(grid_cord) != visited.end())
+			if (visited.find(move->position) != visited.end())
 				continue;
-			if (occupancy_grid[grid_cord.x][grid_cord.y][grid_cord.z])
+			if (occupancy_grid[move->position.x][move->position.y][move->position.z])
 				continue;
-			if (grid_cord_is_equal(grid_cord, target_pos_grid_cord)) {
+			if (grid_cord_is_equal(move->position, target_pos_grid_cord)) {
 				RCLCPP_INFO(this->get_logger(), "Hit end path");
 				path = backtrace_path(move);
 				break;
@@ -216,17 +209,29 @@ void PathFinder::calculate_path(Position target_pos) {
 	}
 	current_path.reserve(path.size());
 	for (Position pos : path) {
-		RCLCPP_INFO(this->get_logger(), "PathPoint: (%f,%f,%f)", pos.x, pos.y, pos.z);
-		current_path.push_back(grid_pos_to_world_pos(pos));
+		Position world_pos = grid_pos_to_world_pos(pos);
+		RCLCPP_INFO(this->get_logger(), "PathPoint: (%f,%f,%f)", world_pos.x, world_pos.y, world_pos.z);
+		current_path.push_back(world_pos);
 	}
 }
 
-inline std::array<std::shared_ptr<PathNode>, 26> PathFinder::get_available_moves(const std::shared_ptr<PathNode> &node) {
-	std::array<std::shared_ptr<PathNode>, 26> out;
-	int out_idx = 0;
-	float start_x = node->position.x;
-	float start_y = node->position.y;
-	float start_z = node->position.z;
+inline std::array<std::shared_ptr<PathNode>, 6> PathFinder::get_available_moves(const std::shared_ptr<PathNode> &node) {
+	std::array<std::shared_ptr<PathNode>, 6> out;
+	int start_x = node->position.x;
+	int start_y = node->position.y;
+	int start_z = node->position.z;
+	out[0] = std::make_shared<PathNode>();
+	out[0]->position = {start_x+1,start_y,start_z};
+	out[1] = std::make_shared<PathNode>();
+	out[1]->position = {start_x-1,start_y,start_z};
+	out[2] = std::make_shared<PathNode>();
+	out[2]->position = {start_x,start_y+1,start_z};
+	out[3] = std::make_shared<PathNode>();
+	out[3]->position = {start_x,start_y-1,start_z};
+	out[4] = std::make_shared<PathNode>();
+	out[4]->position = {start_x,start_y,start_z+1};
+	out[5] = std::make_shared<PathNode>();
+	out[5]->position = {start_x,start_y,start_z-1};
 	/*
 	for (int x=-1; x<=1; x++) {
 		for (int y=-1; y<=1; y++) {
@@ -246,17 +251,30 @@ inline std::array<std::shared_ptr<PathNode>, 26> PathFinder::get_available_moves
 }
 
 std::vector<Position> PathFinder::backtrace_path(std::shared_ptr<PathNode> end_node) {
-	std::queue<Position> pos_queue;
+	std::stack<Position> pos_stack;
 	auto cur_node = end_node;
 	while (cur_node->prev_node != nullptr) {
-		pos_queue.push(cur_node->position);
+		GridCord grid_cord = cur_node->position;
+		/*
+		Position grid_pos = {
+			(grid_cord.x * OCCUPANCY_GRID_CELL_SIZE) - (OCCUPANCY_GRID_WIDTH / 2.f),
+			(grid_cord.y * OCCUPANCY_GRID_CELL_SIZE) - (OCCUPANCY_GRID_WIDTH / 2.f),
+			(grid_cord.z * OCCUPANCY_GRID_CELL_SIZE) - (OCCUPANCY_GRID_HEIGHT / 2.f)
+		};
+		*/
+		Position grid_pos = {
+		    ((float)grid_cord.x - OCCUPANCY_GRID_WIDTH / 2.f) * OCCUPANCY_GRID_CELL_SIZE,
+		    ((float)grid_cord.y - OCCUPANCY_GRID_WIDTH / 2.f) * OCCUPANCY_GRID_CELL_SIZE,
+		    ((float)grid_cord.z - OCCUPANCY_GRID_HEIGHT / 2.f) * OCCUPANCY_GRID_CELL_SIZE
+		};
+		pos_stack.push(grid_pos);
 		cur_node = cur_node->prev_node;
 	}
 	std::vector<Position> out;
-	out.reserve(pos_queue.size());
-	while (!pos_queue.empty()) {
-		Position pos = pos_queue.front();
-		pos_queue.pop();
+	out.reserve(pos_stack.size());
+	while (!pos_stack.empty()) {
+		Position pos = pos_stack.top();
+		pos_stack.pop();
 		out.push_back(pos);
 	}
 	return out;
@@ -417,6 +435,10 @@ inline float PathFinder::get_position_distance(const Position &pos1, const Posit
 		pos2.y - pos1.y,
 		pos2.z - pos1.z
 	);
+}
+
+inline int PathFinder::get_cord_distance(const GridCord &pos1, const GridCord &pos2) {
+	return abs(pos2.x - pos1.x) + abs(pos2.y - pos1.y) + abs(pos2.z - pos1.z);
 }
 
 int main(int argc, char *argv[]) {
